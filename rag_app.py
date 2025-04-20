@@ -18,3 +18,18 @@ document=get_wikipedia_content(topic)
 if not document:
     print('could not retrieve information.')
     exit()
+
+tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-mpnet-base-v2")
+def split_text(text,chunk_size=256,chunk_overlap=20):
+    tokens=tokenizer.tokenize(text)
+    chunks=[]
+    start=0
+    while start<len(tokens):
+        end=min(start+chunk_size,len(tokens))
+        chunks.append(tokenizer.convert_tokens_to_string(tokens[start:end]))
+        if end==len(tokens):
+            break
+        start=end-chunk_overlap
+    return chunks
+chunks=split_text(document)
+print(f"number of chunks:{len(chunks)}")
