@@ -33,3 +33,9 @@ def split_text(text,chunk_size=256,chunk_overlap=20):
     return chunks
 chunks=split_text(document)
 print(f"number of chunks:{len(chunks)}")
+
+embedding_model=SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+embeddings=embedding_model.encode(chunks)
+dimension=embeddings.shape[1]
+index=faiss.IndexFlatL2(dimension)
+index.add(np.array(embeddings))
