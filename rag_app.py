@@ -39,3 +39,12 @@ embeddings=embedding_model.encode(chunks)
 dimension=embeddings.shape[1]
 index=faiss.IndexFlatL2(dimension)
 index.add(np.array(embeddings))
+
+query=input("Ask a question about the topic:")
+query_embedding=embedding_model.encode([query])
+k=3
+distances,indices=index.search(np.array(query_embedding),k)
+retrieved_chunks=[chunks[i] for i in indices[0]]
+print("Retreived chunks:")
+for chunk in retrieved_chunks:
+    print("_"+chunk)
