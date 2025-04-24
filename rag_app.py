@@ -20,7 +20,7 @@ if not document:
     exit()
 
 tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-mpnet-base-v2")
-def split_text(text,chunk_size=256,chunk_overlap=20):
+def split_text(text,chunk_size=128,chunk_overlap=40):
     tokens=tokenizer.tokenize(text)
     chunks=[]
     start=0
