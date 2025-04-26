@@ -1,3 +1,4 @@
+import os 
 import wikipedia
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
 from sentence_transformers import SentenceTransformer
@@ -49,10 +50,22 @@ print("Retreived chunks:")
 for chunk in retrieved_chunks:
     print("-"+chunk)
 
-qa_model_name='deepset/roberta-base-squad2'
-qa_tokenizer=AutoTokenizer.from_pretrained(qa_model_name)
-qa_model=AutoModelForQuestionAnswering.from_pretrained(qa_model_name)
-qa_pipeline=pipeline("question-answering",model=qa_model,tokenizer=qa_tokenizer)
-context="".join(retrieved_chunks)
-answer=qa_pipeline(question=query,context=context)
+qa_model_name = 'deepset/roberta-base-squad2'
+local_model_dir = './saved_model_roberta_squad2'
+
+if not os.path.exists(local_model_dir):
+    print("Model not found locally. Downloading and saving...")
+    qa_tokenizer = AutoTokenizer.from_pretrained(qa_model_name)
+    qa_model = AutoModelForQuestionAnswering.from_pretrained(qa_model_name)
+    qa_tokenizer.save_pretrained(local_model_dir)
+    qa_model.save_pretrained(local_model_dir)
+else:
+    print("Loading model from local storage...")
+    qa_tokenizer = AutoTokenizer.from_pretrained(local_model_dir)
+    qa_model = AutoModelForQuestionAnswering.from_pretrained(local_model_dir)
+
+qa_pipeline = pipeline("question-answering", model=qa_model, tokenizer=qa_tokenizer)
+
+context = "".join(retrieved_chunks)
+answer = qa_pipeline(question=query, context=context)
 print(f"Answer:{answer['answer']}")
