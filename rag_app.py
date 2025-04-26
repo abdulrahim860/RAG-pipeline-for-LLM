@@ -47,4 +47,12 @@ distances,indices=index.search(np.array(query_embedding),k)
 retrieved_chunks=[chunks[i] for i in indices[0]]
 print("Retreived chunks:")
 for chunk in retrieved_chunks:
-    print("_"+chunk)
+    print("-"+chunk)
+
+qa_model_name='deepset/roberta-base-squad2'
+qa_tokenizer=AutoTokenizer.from_pretrained(qa_model_name)
+qa_model=AutoModelForQuestionAnswering.from_pretrained(qa_model_name)
+qa_pipeline=pipeline("question-answering",model=qa_model,tokenizer=qa_tokenizer)
+context="".join(retrieved_chunks)
+answer=qa_pipeline(question=query,context=context)
+print(f"Answer:{answer['answer']}")
