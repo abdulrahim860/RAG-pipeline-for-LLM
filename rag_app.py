@@ -14,7 +14,7 @@ def get_wikipedia_content(topic):
     except wikipedia.exceptions.PageError:
         return None
     except wikipedia.exceptions.DisambiguationError as e:
-        st.warning(f"Ambiguous topic. Please be more specific. Options: {e.options}")
+        st.warning(f"Ambiguous topic: {topic}. Options: {e.options}")
         return None
 
 @st.cache_data
@@ -56,24 +56,40 @@ def load_qa_model(local_model_dir='./saved_model_roberta_squad2'):
     return pipeline("question-answering", model=qa_model, tokenizer=qa_tokenizer)
 
 def main():
-    st.title("🧠 Wikipedia RAG App")
-    topic = st.text_input("Enter a topic to learn about:")
+    st.title("🧠 Multi-Topic Wikipedia RAG App")
+    topics_input = st.text_input("Enter multiple topics (comma-separated):")
 
-    if topic:
-        document = get_wikipedia_content(topic)
-        if not document:
-            st.error("Could not retrieve information for this topic.")
+    if topics_input:
+        topics = [t.strip() for t in topics_input.split(",") if t.strip()]
+        combined_content = ""
+        successful_topics = []
+        failed_topics = []
+
+        with st.spinner("Fetching Wikipedia articles..."):
+            for topic in topics:
+                content = get_wikipedia_content(topic)
+                if content:
+                    combined_content += content + "\n\n"
+                    successful_topics.append(topic)
+                else:
+                    failed_topics.append(topic)
+
+        if not combined_content:
+            st.error("No valid Wikipedia articles found.")
             return
 
-        st.success("Wikipedia content retrieved!")
-        chunks = split_text(document)
-        st.write(f"✅ Number of chunks created: {len(chunks)}")
+        st.success(f"✅ Articles loaded for: {', '.join(successful_topics)}")
+        if failed_topics:
+            st.warning(f"⚠️ Failed to fetch: {', '.join(failed_topics)}")
+
+        chunks = split_text(combined_content)
+        st.write(f"✅ Total number of chunks created: {len(chunks)}")
 
         embedding_model = load_embedding_model()
         embeddings = embedding_model.encode(chunks)
         index = create_index(embeddings)
 
-        query = st.text_input("Ask a question about this topic:")
+        query = st.text_input("Ask a question across all topics:")
 
         if query:
             query_embedding = embedding_model.encode([query])
