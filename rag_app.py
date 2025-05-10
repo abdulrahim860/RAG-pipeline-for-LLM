@@ -61,7 +61,7 @@ def main():
 
     if topics_input:
         topics = [t.strip() for t in topics_input.split(",") if t.strip()]
-        combined_content = ""
+        topic_contents = {}
         successful_topics = []
         failed_topics = []
 
@@ -69,12 +69,12 @@ def main():
             for topic in topics:
                 content = get_wikipedia_content(topic)
                 if content:
-                    combined_content += content + "\n\n"
+                    topic_contents[topic] = content
                     successful_topics.append(topic)
                 else:
                     failed_topics.append(topic)
 
-        if not combined_content:
+        if not topic_contents:
             st.error("No valid Wikipedia articles found.")
             return
 
@@ -82,29 +82,42 @@ def main():
         if failed_topics:
             st.warning(f"⚠️ Failed to fetch: {', '.join(failed_topics)}")
 
-        chunks = split_text(combined_content)
-        st.write(f"✅ Total number of chunks created: {len(chunks)}")
-
+        topic_chunks = {}
+        topic_embeddings = {}
         embedding_model = load_embedding_model()
-        embeddings = embedding_model.encode(chunks)
-        index = create_index(embeddings)
+
+        for topic, content in topic_contents.items():
+            chunks = split_text(content)
+            topic_chunks[topic] = chunks
+            embeddings = embedding_model.encode(chunks)
+            index = create_index(embeddings)
+            topic_embeddings[topic] = (chunks, index)
 
         query = st.text_input("Ask a question across all topics:")
 
         if query:
-            query_embedding = embedding_model.encode([query])
-            distances, indices = index.search(np.array(query_embedding), k=3)
-            retrieved_chunks = [chunks[i] for i in indices[0]]
-            st.subheader("📄 Retrieved Chunks:")
-            for i, chunk in enumerate(retrieved_chunks, 1):
-                st.text_area(f"Chunk {i}", chunk, height=100)
-
             qa_pipeline = load_qa_model()
-            context = " ".join(retrieved_chunks)
-            answer = qa_pipeline(question=query, context=context)
-            st.subheader("💬 Answer:")
-            st.write(answer['answer'])
-            st.caption(f"Confidence Score: {answer['score']:.2f}")
+
+            for topic in successful_topics:
+                st.markdown(f"### 🏷️ **{topic}**")
+
+                sub_question = f"{query.strip().rstrip('?')} of {topic}?"
+
+                chunks, index = topic_embeddings[topic]
+                query_embedding = embedding_model.encode([sub_question])
+                distances, indices = index.search(np.array(query_embedding), k=3)
+                retrieved_chunks = [chunks[i] for i in indices[0]]
+
+                st.subheader("📄 Retrieved Chunks:")
+                for i, chunk in enumerate(retrieved_chunks, 1):
+                    st.text_area(f"{topic} - Chunk {i}", chunk, height=100)
+
+                context = " ".join(retrieved_chunks)
+                answer = qa_pipeline(question=sub_question, context=context)
+
+                st.subheader("💬 Answer:")
+                st.write(answer['answer'])
+                st.caption(f"Confidence Score: {answer['score']:.2f}")
 
 if __name__ == "__main__":
     main()
