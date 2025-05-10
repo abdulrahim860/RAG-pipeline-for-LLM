@@ -8,14 +8,25 @@ import numpy as np
 
 @st.cache_data
 def get_wikipedia_content(topic):
+    specific_pages = {
+        "apple": "Apple Inc.",
+        "samsung": "Samsung Electronics",
+        "microsoft": "Microsoft"
+    }
+    topic_to_search = specific_pages.get(topic.lower(), topic)
     try:
-        page = wikipedia.page(topic)
-        return page.content
+        page = wikipedia.page(topic_to_search)
+        return page.content, topic_to_search
     except wikipedia.exceptions.PageError:
-        return None
+        return None, topic_to_search
     except wikipedia.exceptions.DisambiguationError as e:
-        st.warning(f"Ambiguous topic: {topic}. Options: {e.options}")
-        return None
+        try:
+            first_option = e.options[0]
+            page = wikipedia.page(first_option)
+            return page.content, first_option
+        except:
+            st.warning(f"Ambiguous topic: {topic}. Options: {e.options}")
+            return None, topic_to_search
 
 @st.cache_data
 def split_text(text, chunk_size=128, chunk_overlap=40):
@@ -64,13 +75,15 @@ def main():
         topic_contents = {}
         successful_topics = []
         failed_topics = []
+        topic_real_names = {}
 
         with st.spinner("Fetching Wikipedia articles..."):
             for topic in topics:
-                content = get_wikipedia_content(topic)
+                content, searched_topic = get_wikipedia_content(topic)
                 if content:
-                    topic_contents[topic] = content
-                    successful_topics.append(topic)
+                    topic_contents[searched_topic] = content
+                    successful_topics.append(searched_topic)
+                    topic_real_names[searched_topic] = topic
                 else:
                     failed_topics.append(topic)
 
@@ -92,6 +105,9 @@ def main():
             embeddings = embedding_model.encode(chunks)
             index = create_index(embeddings)
             topic_embeddings[topic] = (chunks, index)
+
+            page_url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
+            st.markdown(f"🔗 [{topic} Wikipedia Page]({page_url})")
 
         query = st.text_input("Ask a question across all topics:")
 
