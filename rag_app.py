@@ -1,4 +1,6 @@
 import os
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+
 import wikipedia
 import streamlit as st
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
@@ -15,21 +17,22 @@ def get_wikipedia_content(topic):
     }
     topic_to_search = specific_pages.get(topic.lower(), topic)
     try:
-        page = wikipedia.page(topic_to_search)
+        page = wikipedia.page(topic_to_search, auto_suggest=False)
         return page.content, topic_to_search
-    except wikipedia.exceptions.PageError:
-        return None, topic_to_search
     except wikipedia.exceptions.DisambiguationError as e:
-        try:
-            first_option = e.options[0]
-            page = wikipedia.page(first_option)
-            return page.content, first_option
-        except:
-            st.warning(f"Ambiguous topic: {topic}. Options: {e.options}")
-            return None, topic_to_search
+        for option in e.options:
+            if "Inc" in option or "Electronics" in option:
+                try:
+                    page = wikipedia.page(option, auto_suggest=False)
+                    return page.content, option
+                except:
+                    continue
+        return None, topic_to_search
+    except:
+        return None, topic_to_search
 
 @st.cache_data
-def split_text(text, chunk_size=128, chunk_overlap=40):
+def split_text(text, chunk_size=256, chunk_overlap=64):
     tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-mpnet-base-v2")
     tokens = tokenizer.tokenize(text)
     chunks = []
@@ -75,15 +78,13 @@ def main():
         topic_contents = {}
         successful_topics = []
         failed_topics = []
-        topic_real_names = {}
 
         with st.spinner("Fetching Wikipedia articles..."):
             for topic in topics:
-                content, searched_topic = get_wikipedia_content(topic)
+                content, true_name = get_wikipedia_content(topic)
                 if content:
-                    topic_contents[searched_topic] = content
-                    successful_topics.append(searched_topic)
-                    topic_real_names[searched_topic] = topic
+                    topic_contents[true_name] = content
+                    successful_topics.append(true_name)
                 else:
                     failed_topics.append(topic)
 
@@ -95,14 +96,14 @@ def main():
         if failed_topics:
             st.warning(f"⚠️ Failed to fetch: {', '.join(failed_topics)}")
 
+        embedding_model = load_embedding_model()
         topic_chunks = {}
         topic_embeddings = {}
-        embedding_model = load_embedding_model()
 
         for topic, content in topic_contents.items():
             chunks = split_text(content)
             topic_chunks[topic] = chunks
-            embeddings = embedding_model.encode(chunks)
+            embeddings = embedding_model.encode(chunks, convert_to_numpy=True)
             index = create_index(embeddings)
             topic_embeddings[topic] = (chunks, index)
 
@@ -113,15 +114,13 @@ def main():
 
         if query:
             qa_pipeline = load_qa_model()
-
             for topic in successful_topics:
                 st.markdown(f"### 🏷️ **{topic}**")
-
-                sub_question = f"{query.strip().rstrip('?')} of {topic}?"
+                contextual_query = f"What is the {query.strip().lower()} of {topic}?"
 
                 chunks, index = topic_embeddings[topic]
-                query_embedding = embedding_model.encode([sub_question])
-                distances, indices = index.search(np.array(query_embedding), k=3)
+                query_embedding = embedding_model.encode([contextual_query], convert_to_numpy=True)
+                distances, indices = index.search(query_embedding, k=5)
                 retrieved_chunks = [chunks[i] for i in indices[0]]
 
                 st.subheader("📄 Retrieved Chunks:")
@@ -129,11 +128,11 @@ def main():
                     st.text_area(f"{topic} - Chunk {i}", chunk, height=100)
 
                 context = " ".join(retrieved_chunks)
-                answer = qa_pipeline(question=sub_question, context=context)
+                result = qa_pipeline(question=contextual_query, context=context)
 
                 st.subheader("💬 Answer:")
-                st.write(answer['answer'])
-                st.caption(f"Confidence Score: {answer['score']:.2f}")
+                st.write(result['answer'])
+                st.caption(f"Confidence Score: {result['score']:.2f}")
 
 if __name__ == "__main__":
     main()
