@@ -7,6 +7,10 @@ from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
+import nltk
+from nltk.tokenize import sent_tokenize
+
+nltk.download('punkt')
 
 @st.cache_data
 def get_wikipedia_content(topic):
@@ -31,32 +35,37 @@ def get_wikipedia_content(topic):
     except:
         return None, topic_to_search
 
-@st.cache_data
-def split_text(text, chunk_size=256, chunk_overlap=64):
-    tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-mpnet-base-v2")
-    tokens = tokenizer.tokenize(text)
+def split_text(text, max_chunk_size=500, overlap=100):
+    sentences = sent_tokenize(text)
     chunks = []
-    start = 0
-    while start < len(tokens):
-        end = min(start + chunk_size, len(tokens))
-        chunks.append(tokenizer.convert_tokens_to_string(tokens[start:end]))
-        if end == len(tokens):
-            break
-        start = end - chunk_overlap
+    current_chunk = []
+    current_length = 0
+
+    for sentence in sentences:
+        sentence_len = len(sentence.split())
+        if current_length + sentence_len > max_chunk_size:
+            chunks.append(" ".join(current_chunk))
+            current_chunk = current_chunk[-overlap:]  
+            current_length = sum(len(s.split()) for s in current_chunk)
+        current_chunk.append(sentence)
+        current_length += sentence_len
+
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
     return chunks
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_embedding_model():
-    return SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-@st.cache_resource
-def create_index(embeddings):
+def create_faiss_index(embeddings):
     dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(np.array(embeddings))
+    index = faiss.IndexFlatIP(dimension)  
+    faiss.normalize_L2(embeddings)
+    index.add(embeddings)
     return index
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_qa_model(local_model_dir='./saved_model_roberta_squad2'):
     qa_model_name = 'deepset/roberta-base-squad2'
     if not os.path.exists(local_model_dir):
@@ -69,70 +78,89 @@ def load_qa_model(local_model_dir='./saved_model_roberta_squad2'):
         qa_model = AutoModelForQuestionAnswering.from_pretrained(local_model_dir)
     return pipeline("question-answering", model=qa_model, tokenizer=qa_tokenizer)
 
+def batch_encode(embedding_model, texts, batch_size=32):
+    embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        batch_emb = embedding_model.encode(batch, convert_to_numpy=True, normalize_embeddings=True)
+        embeddings.append(batch_emb)
+    return np.vstack(embeddings)
+
 def main():
-    st.title("🧠 Multi-Topic Wikipedia RAG App")
+    st.set_page_config(page_title="Improved Multi-Topic Wikipedia RAG", layout="wide")
+    st.title("🧠 Improved Multi-Topic Wikipedia RAG App")
+
     topics_input = st.text_input("Enter multiple topics (comma-separated):")
+    if not topics_input:
+        st.info("Please enter one or more topics to fetch Wikipedia content.")
+        return
 
-    if topics_input:
-        topics = [t.strip() for t in topics_input.split(",") if t.strip()]
-        topic_contents = {}
-        successful_topics = []
-        failed_topics = []
+    topics = [t.strip() for t in topics_input.split(",") if t.strip()]
+    topic_contents = {}
+    successful_topics = []
+    failed_topics = []
 
-        with st.spinner("Fetching Wikipedia articles..."):
-            for topic in topics:
-                content, true_name = get_wikipedia_content(topic)
-                if content:
-                    topic_contents[true_name] = content
-                    successful_topics.append(true_name)
-                else:
-                    failed_topics.append(topic)
+    with st.spinner("Fetching Wikipedia articles..."):
+        for topic in topics:
+            content, true_name = get_wikipedia_content(topic)
+            if content:
+                topic_contents[true_name] = content
+                successful_topics.append(true_name)
+            else:
+                failed_topics.append(topic)
 
-        if not topic_contents:
-            st.error("No valid Wikipedia articles found.")
-            return
+    if not topic_contents:
+        st.error("No valid Wikipedia articles found.")
+        return
 
-        st.success(f"✅ Articles loaded for: {', '.join(successful_topics)}")
-        if failed_topics:
-            st.warning(f"⚠️ Failed to fetch: {', '.join(failed_topics)}")
+    st.success(f"✅ Articles loaded for: {', '.join(successful_topics)}")
+    if failed_topics:
+        st.warning(f"⚠️ Failed to fetch: {', '.join(failed_topics)}")
 
-        embedding_model = load_embedding_model()
-        topic_chunks = {}
-        topic_embeddings = {}
+    embedding_model = load_embedding_model()
+    topic_chunks = {}
+    topic_embeddings = {}
+    topic_indices = {}
 
-        for topic, content in topic_contents.items():
-            chunks = split_text(content)
-            topic_chunks[topic] = chunks
-            embeddings = embedding_model.encode(chunks, convert_to_numpy=True)
-            index = create_index(embeddings)
-            topic_embeddings[topic] = (chunks, index)
+    for topic, content in topic_contents.items():
+        chunks = split_text(content)
+        embeddings = batch_encode(embedding_model, chunks)
+        index = create_faiss_index(embeddings)
 
-            page_url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
-            st.markdown(f"🔗 [{topic} Wikipedia Page]({page_url})")
+        topic_chunks[topic] = chunks
+        topic_embeddings[topic] = embeddings
+        topic_indices[topic] = index
 
-        query = st.text_input("Ask a question across all topics:")
+        page_url = f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}"
+        st.markdown(f"🔗 [{topic} Wikipedia Page]({page_url})")
 
-        if query:
-            qa_pipeline = load_qa_model()
-            for topic in successful_topics:
-                st.markdown(f"### 🏷️ **{topic}**")
-                contextual_query = f"What is the {query.strip().lower()} of {topic}?"
+    query = st.text_input("Ask a question across all topics:")
 
-                chunks, index = topic_embeddings[topic]
-                query_embedding = embedding_model.encode([contextual_query], convert_to_numpy=True)
-                distances, indices = index.search(query_embedding, k=5)
-                retrieved_chunks = [chunks[i] for i in indices[0]]
+    if query:
+        qa_pipeline = load_qa_model()
+        query_embedding = embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
 
-                st.subheader("📄 Retrieved Chunks:")
-                for i, chunk in enumerate(retrieved_chunks, 1):
-                    st.text_area(f"{topic} - Chunk {i}", chunk, height=100)
+        for topic in successful_topics:
+            st.markdown(f"### 🏷️ **{topic}**")
+            index = topic_indices[topic]
+            chunks = topic_chunks[topic]
 
-                context = " ".join(retrieved_chunks)
-                result = qa_pipeline(question=contextual_query, context=context)
+            D, I = index.search(query_embedding, k=5)
+            retrieved_chunks = [chunks[i] for i in I[0]]
 
+            st.subheader("📄 Retrieved Chunks:")
+            for i, chunk in enumerate(retrieved_chunks, 1):
+                st.text_area(f"{topic} - Chunk {i}", chunk, height=120)
+
+            context = " ".join(retrieved_chunks)
+            result = qa_pipeline(question=query, context=context)
+
+            if result['score'] > 0.2:
                 st.subheader("💬 Answer:")
                 st.write(result['answer'])
                 st.caption(f"Confidence Score: {result['score']:.2f}")
+            else:
+                st.warning("Answer confidence too low; try rephrasing the question.")
 
 if __name__ == "__main__":
     main()
