@@ -1,7 +1,7 @@
 import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 
-import wikipedia
+import wikipediaapi
 import streamlit as st
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
 from sentence_transformers import SentenceTransformer
@@ -9,7 +9,8 @@ import faiss
 import numpy as np
 import nltk
 nltk.download('punkt')
-from nltk.tokenize import sent_tokenize
+from nltk.tokenize import sent_tokenize, word_tokenize
+from gensim.downloader import load as gensim_load
 
 @st.cache_data
 def get_wikipedia_content(topic):
@@ -18,16 +19,21 @@ def get_wikipedia_content(topic):
         "samsung": "Samsung Electronics",
         "microsoft": "Microsoft"
     }
+    wiki = wikipediaapi.Wikipedia('en')
     topic_to_search = specific_pages.get(topic.lower(), topic)
     try:
-        page = wikipedia.page(topic_to_search, auto_suggest=False)
-        return page.content, topic_to_search
-    except wikipedia.exceptions.DisambiguationError as e:
+        page = wiki.page(topic_to_search)
+        if page.exists():
+            return page.text, topic_to_search
+        else:
+            return None, topic_to_search
+    except wikipediaapi.exceptions.DisambiguationError as e:
         for option in e.options:
             if "Inc" in option or "Electronics" in option:
                 try:
-                    page = wikipedia.page(option, auto_suggest=False)
-                    return page.content, option
+                    page = wiki.page(option)
+                    if page.exists():
+                        return page.text, option
                 except:
                     continue
         return None, topic_to_search
@@ -73,6 +79,22 @@ def load_qa_model(local_model_dir='./saved_model_bert_squad'):
         qa_model = AutoModelForQuestionAnswering.from_pretrained(local_model_dir)
     return pipeline("question-answering", model=qa_model, tokenizer=qa_tokenizer)
 
+@st.cache_resource
+def load_glove_model():
+    return gensim_load('glove-wiki-gigaword-50')
+
+def expand_query(query, glove_model, top_n=3):
+    tokens = word_tokenize(query.lower())
+    expanded_queries = [query]
+    key_terms = ['model', 'ai', 'latest']
+    for token in tokens:
+        if token in key_terms and token in glove_model:
+            similar_words = glove_model.most_similar(token, topn=top_n)
+            for similar_word, _ in similar_words:
+                expanded_query = query.lower().replace(token, similar_word)
+                expanded_queries.append(expanded_query)
+    return list(set(expanded_queries))
+
 def main():
     st.title("🧠 Multi-Topic Wikipedia RAG App (Improved)")
     topics_input = st.text_input("Enter multiple topics (comma-separated):")
@@ -101,6 +123,7 @@ def main():
             st.warning(f"⚠️ Failed to fetch: {', '.join(failed_topics)}")
 
         embedding_model = load_embedding_model()
+        glove_model = load_glove_model()
         topic_chunks = {}
         topic_embeddings = {}
 
@@ -118,12 +141,14 @@ def main():
 
         if query:
             qa_pipeline = load_qa_model()
+            expanded_queries = expand_query(query, glove_model)
             for topic in successful_topics:
                 st.markdown(f"### 🏷️ **{topic}**")
-                contextual_query = f"What is the answer to: {query.strip()} in the context of {topic}?"
-
+                contextual_queries = [f"What is the answer to: {eq.strip()} in the context of {topic}?" for eq in expanded_queries]
+                
                 chunks, index = topic_embeddings[topic]
-                query_embedding = embedding_model.encode([contextual_query], convert_to_numpy=True)
+                query_embeddings = embedding_model.encode(contextual_queries, convert_to_numpy=True)
+                query_embedding = np.mean(query_embeddings, axis=0, keepdims=True)
                 distances, indices = index.search(query_embedding, k=5)
 
                 if distances[0][0] > 1.5:
@@ -136,6 +161,7 @@ def main():
                     st.text_area(f"{topic} - Chunk {i}", chunk, height=100)
 
                 context = " ".join(retrieved_chunks)
+                contextual_query = f"What is the answer to: {query.strip()} in the context of {topic}?"
                 result = qa_pipeline(question=contextual_query, context=context)
 
                 st.subheader("💬 Answer:")
